@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Encrypted Chat Room</h2>
+
+  <input id="msg" placeholder="Type message" />
+  <button onclick="sendMsg()">Send</button>
+
+  <pre id="chat"></pre>
+
+<script>
+const room = location.pathname.split("/").pop() || "testroom";
+const password = location.hash.slice(1);
+
+if (!password) {
+  alert("Add password in URL like: /room123#secretpass");
+}
+
+const ws = new WebSocket(
+  location.protocol === "https:"
+    ? `wss://${location.host}`
+    : `ws://${location.hostname}:8080`
+);
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "join", room }));
+};
+
+async function getKey() {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: enc.encode(room),
+      iterations: 100000,
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encrypt(text) {
+  const key = await getKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(text)
+  );
+
+  return {
+    iv: Array.from(iv),
+    data: Array.from(new Uint8Array(encrypted))
+  };
+}
+
+async function decrypt(payload) {
+  const key = await getKey();
+
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: new Uint8Array(payload.iv) },
+    key,
+    new Uint8Array(payload.data)
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
+async function sendMsg() {
+  const input = document.getElementById("msg");
+  const text = input.value;
+
+  if (!text) return;
+
+  const encrypted = await encrypt(text);
+
+  ws.send(JSON.stringify({
+    type: "message",
+    payload: encrypted
+  }));
+
+  chat.textContent += "Me: " + text + "\n";
+  input.value = "";
+}
+
+ws.onmessage = async (event) => {
+  const data = JSON.parse(event.data);
+
+  if (data.type === "message") {
+    const text = await decrypt(data.payload);
+    chat.textContent += "Friend: " + text + "\n";
+  }
+};
+</script>
+</body>
+</html>
